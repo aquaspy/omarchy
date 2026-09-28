@@ -62,6 +62,35 @@ printf '\t%s' "$@" >>"$TEST_LOG"
 printf '\n' >>"$TEST_LOG"
 SH
 
+# Install as whoever runs the test, and have stat report root ownership, or a
+# user's when a case asks for a foreign owner, whoever that is.
+cat >"$stub_bin/install" <<'SH'
+#!/bin/bash
+
+printf 'install' >>"${TEST_LOG:-/dev/null}"
+printf '\t%s' "$@" >>"${TEST_LOG:-/dev/null}"
+printf '\n' >>"${TEST_LOG:-/dev/null}"
+args=()
+while (( $# )); do
+  case $1 in
+    -o | -g) shift 2 ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+exec /usr/bin/install "${args[@]}"
+SH
+
+cat >"$stub_bin/stat" <<'SH'
+#!/bin/bash
+
+out=$(/usr/bin/stat "$@")
+if (( ${RTW89_FOREIGN_OWNER:-0} == 1 )); then
+  printf '1000:1000 %s\n' "${out#* }"
+else
+  printf '0:0 %s\n' "${out#* }"
+fi
+SH
+
 chmod +x "$stub_bin"/*
 
 run_leaf() {
@@ -75,7 +104,9 @@ run_leaf() {
     bash -eE -o pipefail -c 'source "$1"' bash "$script" </dev/null
 }
 
-run_leaf 1 >/dev/null
+TEST_LOG="$calls" run_leaf 1 >/dev/null
+grep -Fq $'install\t-D\t-m\t0755\t-o\troot\t-g\troot' "$calls" ||
+  fail "the leaf installs the hook owned by root" "$(cat "$calls")"
 [[ -x $test_tmp/sleep/rtw89-8852be ]] ||
   fail "the leaf installs an executable hook" "$(ls -la "$test_tmp/sleep" 2>&1)"
 cmp -s "$hook" "$test_tmp/sleep/rtw89-8852be" ||
@@ -134,7 +165,7 @@ pass "the hook is a no-op without RTL8852BE"
 run_migration() {
   local present="$1"
   : >"$calls"
-  RTW89_HARDWARE="$present" PATH="$stub_bin:$PATH" TEST_LOG="$calls" \
+  RTW89_HARDWARE="$present" RTW89_FOREIGN_OWNER="${2:-0}" PATH="$stub_bin:$PATH" TEST_LOG="$calls" \
     OMARCHY_PATH="$ROOT" \
     OMARCHY_RTW89_HOOK_SRC="$hook" \
     OMARCHY_RTW89_HOOK_DST="$test_tmp/sleep/rtw89-8852be" \
@@ -145,13 +176,26 @@ rm -rf "$test_tmp/sleep"
 run_migration 1
 [[ -x $test_tmp/sleep/rtw89-8852be ]] ||
   fail "the migration installs the hook" "$(ls -la "$test_tmp/sleep" 2>&1)"
-grep -Fq $'sudo\tcp\t-p' "$calls" ||
-  fail "the migration copies the hook as root" "$(cat "$calls")"
+grep -Fq $'sudo\tinstall\t-m\t0755\t-o\troot\t-g\troot' "$calls" ||
+  fail "the migration installs the hook owned by root" "$(cat "$calls")"
+[[ -z $(find "$test_tmp/sleep" -name '.rtw89-8852be.omarchy.*') ]] ||
+  fail "the migration leaves no staging file behind" "$(ls -la "$test_tmp/sleep")"
 pass "the migration installs the hook on RTL8852BE"
 
 run_migration 1
 [[ ! -s $calls ]] || fail "the migration is idempotent" "$(cat "$calls")"
 pass "the migration is idempotent"
+
+chmod 0644 "$test_tmp/sleep/rtw89-8852be"
+run_migration 1
+[[ -x $test_tmp/sleep/rtw89-8852be ]] ||
+  fail "the migration replaces a matching copy systemd-sleep would not run" "$(ls -la "$test_tmp/sleep")"
+pass "the migration replaces a non-executable copy"
+
+run_migration 1 1
+grep -Fq $'sudo\tinstall' "$calls" ||
+  fail "the migration replaces a matching copy root does not own" "$(cat "$calls")"
+pass "the migration replaces a copy root does not own"
 
 rm -rf "$test_tmp/sleep"
 run_migration 0

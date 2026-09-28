@@ -11,8 +11,7 @@ pci_info=$(lspci -nn)
 if [[ $pci_info == *'[10ec:b852]'* ]]; then
   echo "Detected RTL8852BE; installing s2idle Wi-Fi resume hook"
 
-  dest=/usr/lib/systemd/system-sleep/rtw89-8852be
-  mkdir -p "$(dirname "$dest")"
-  cp -p "$OMARCHY_PATH/default/systemd/system-sleep/rtw89-8852be" "$dest"
-  chmod +x "$dest"
+  # systemd-sleep runs this as root, so it must be root's whatever owns the source.
+  install -D -m 0755 -o root -g root -T "$OMARCHY_PATH/default/systemd/system-sleep/rtw89-8852be" \
+    /usr/lib/systemd/system-sleep/rtw89-8852be
 fi

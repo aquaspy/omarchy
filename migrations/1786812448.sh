@@ -15,10 +15,14 @@ if [[ $pci_info != *'[10ec:b852]'* ]]; then
   exit 0
 fi
 
-if [[ -f $dest ]] && cmp -s "$src" "$dest"; then
+# A matching copy counts only if systemd-sleep will run it and only root can change it.
+if [[ -f $dest && ! -L $dest ]] && cmp -s "$src" "$dest" && [[ $(stat -c '%u:%g %a' -- "$dest") == "0:0 755" ]]; then
   exit 0
 fi
 
+# Publish a new root-owned inode rather than rewriting whatever is at $dest,
+# as migrations/1788662350.sh does for the other sleep hooks.
 sudo mkdir -p "$(dirname "$dest")"
-sudo cp -p "$src" "$dest"
-sudo chmod +x "$dest"
+stage=$(sudo mktemp -- "${dest%/*}/.${dest##*/}.omarchy.XXXXXX")
+sudo install -m 0755 -o root -g root -T "$src" "$stage"
+sudo mv -Tf -- "$stage" "$dest"
